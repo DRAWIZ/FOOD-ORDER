@@ -17,30 +17,70 @@ function Cart() {
     }
 
     try {
+      console.log('Placing Order:', {
+        items: cartItems,
+        total,
+        user: user?.id
+      })
+
+      // Prepare order data with validation
+      const orderData = {
+        items: cartItems.map(item => ({
+          id: item.id,
+          name: item.name,
+          price: item.price,
+          quantity: item.quantity,
+          image_url: item.image_url
+        })),
+        total: parseFloat(total.toFixed(2)),
+        user_id: user.id
+      }
+
       const response = await fetch('/api/orders', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify({
-          items: cartItems,
-          total,
-          user_id: user.id
-        })
-      })
+        body: JSON.stringify(orderData)
+      });
 
-      const data = await response.json()
+      // Log full response for debugging
+      console.log('Response Status:', response.status);
+      
+      const responseText = await response.text();
+      console.log('Raw Response Text:', responseText);
 
-      if (!response.ok) {
-        throw new Error(data.message || 'Failed to place order')
+      // Attempt to parse JSON
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('JSON Parsing Error:', parseError);
+        console.error('Unparseable Response:', responseText);
+        
+        // Provide more context about the parsing failure
+        throw new Error(`Failed to parse server response. Status: ${response.status}. Response: ${responseText}`);
       }
 
+      // Check for error in parsed response
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to place order');
+      }
+      
+      // Clear cart and navigate
       clearCart()
       toast.success('Order placed successfully!')
       navigate(`/order-confirmation/${data.id}`)
     } catch (error) {
-      toast.error(error.message || 'Error placing order')
+      console.error('Complete Order Error:', error);
+      
+      // More detailed error toast
+      toast.error(error.message || 'Error placing order', {
+        autoClose: false,
+        closeOnClick: true,
+        pauseOnHover: true
+      });
     }
   }
 

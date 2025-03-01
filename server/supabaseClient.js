@@ -1,4 +1,3 @@
-// server/supabaseClient.js
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 
@@ -11,6 +10,15 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.error('Missing Supabase environment variables!');
   console.error('VITE_SUPABASE_URL:', supabaseUrl ? 'Set' : 'Missing');
   console.error('VITE_SUPABASE_ANON_KEY:', supabaseAnonKey ? 'Set' : 'Missing');
+  throw new Error('Supabase environment variables are not set');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  // Additional configuration for better error tracking
+  db: {
+    schema: 'public',
+  },
+  auth: {
+    persistSession: false
+  }
+});

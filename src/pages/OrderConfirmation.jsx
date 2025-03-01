@@ -8,6 +8,7 @@ function OrderConfirmation() {
   const { id } = useParams()
   const [order, setOrder] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     fetchOrder()
@@ -15,22 +16,45 @@ function OrderConfirmation() {
 
   const fetchOrder = async () => {
     try {
+      console.log('Fetching order with ID:', id);
+      
       const response = await fetch(`/api/orders/${id}`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
       })
       
-      const data = await response.json()
+      console.log('Response Status:', response.status);
       
+      // Log raw response text for debugging
+      const responseText = await response.text();
+      console.log('Raw Response Text:', responseText);
+
+      // Try to parse the response
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('JSON Parsing Error:', parseError);
+        setError(`Failed to parse response: ${responseText}`);
+        setLoading(false);
+        return;
+      }
+
+      // Check for error response
       if (!response.ok) {
-        throw new Error(data.message || 'Failed to fetch order')
+        console.error('Error Response:', data);
+        setError(data.message || 'Failed to fetch order');
+        setLoading(false);
+        return;
       }
       
+      console.log('Fetched Order Data:', data);
       setOrder(data)
       setLoading(false)
     } catch (error) {
-      toast.error(error.message || 'Error loading order')
+      console.error('Comprehensive Fetch Error:', error);
+      setError(error.message || 'Error loading order')
       setLoading(false)
     }
   }
@@ -41,6 +65,22 @@ function OrderConfirmation() {
         <Navbar />
         <div className="flex-grow flex items-center justify-center">
           <p className="text-xl text-gray-600">Loading order details...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <Navbar />
+        <div className="flex-grow flex items-center justify-center">
+          <div className="text-center">
+            <p className="text-xl text-red-600 mb-4">Error: {error}</p>
+            <Link to="/menu" className="btn btn-primary">
+              Return to Menu
+            </Link>
+          </div>
         </div>
       </div>
     )
@@ -104,7 +144,7 @@ function OrderConfirmation() {
             <h2 className="text-xl font-semibold mb-4">Order Items</h2>
             
             <div className="space-y-4 mb-6">
-              {order.items.map((item, index) => (
+              {JSON.parse(order.items).map((item, index) => (
                 <div key={index} className="flex justify-between items-center">
                   <div className="flex items-center">
                     <div className="h-12 w-12 flex-shrink-0">

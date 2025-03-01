@@ -48,13 +48,23 @@ const isAdmin = (req, res, next) => {
 // Auth routes
 app.post('/api/auth/register', async (req, res) => {
   try {
-    console.log('Registration attempt:', req.body);
+    console.log('=== Registration Attempt ===');
+    console.log('Request Body:', JSON.stringify(req.body, null, 2));
+    
     const { name, email, phone, password } = req.body;
     
     // Validate input
     if (!name || !email || !phone || !password) {
       console.log('Missing required fields');
-      return res.status(400).json({ message: 'All fields are required' });
+      return res.status(400).json({ 
+        message: 'All fields are required',
+        details: {
+          name: !!name,
+          email: !!email,
+          phone: !!phone,
+          password: !!password
+        }
+      });
     }
     
     // Check for Supabase connection
@@ -63,81 +73,124 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(500).json({ message: 'Database connection error' });
     }
     
-    // Check if user already exists - fixing the query construction
-    console.log('Checking for existing user with email:', email, 'or phone:', phone);
-    const { data: existingUsers, error: queryError } = await supabase
-      .from('users')
-      .select('*')
-      .or(`email.eq.${email},phone.eq.${phone}`);
-    
-    if (queryError) {
-      console.error('Error checking existing user:', queryError);
-      return res.status(500).json({ message: 'Error checking user existence', error: queryError });
-    }
-    
-    if (existingUsers && existingUsers.length > 0) {
-      console.log('User already exists');
-      return res.status(400).json({ message: 'User with this email or phone already exists' });
-    }
-    
-    // Hash password
-    console.log('Hashing password');
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    
-    // Create user
-    console.log('Creating new user');
-    const newUser = {
-      name, 
-      email, 
-      phone, 
-      password: hashedPassword,
-      role: 'user' // Default role
-    };
-    
-    console.log('Attempting to insert user into database:', { ...newUser, password: '[REDACTED]' });
-    
-    const { data: createdUser, error: insertError } = await supabase
-      .from('users')
-      .insert([newUser])
-      .select();
-    
-    if (insertError) {
-      console.error('Error creating user:', insertError);
-      return res.status(500).json({ 
-        message: 'Failed to create user in database',
-        error: insertError.message,
-        details: insertError.details
+    try {
+      // Comprehensive user existence check
+      const { data: existingUsers, error: queryError } = await supabase
+        .from('users')
+        .select('*')
+        .or(`email.eq.${email},phone.eq.${phone}`);
+      
+      console.log('Existing Users Check:', {
+        existingUsers: existingUsers?.length || 0,
+        queryError
+      });
+      
+      if (queryError) {
+        console.error('Existing User Query Error:', queryError);
+        return res.status(500).json({ 
+          message: 'Error checking user existence', 
+          error: queryError.message,
+          details: queryError
+        });
+      }
+      
+      if (existingUsers && existingUsers.length > 0) {
+        console.log('Duplicate User Found:', existingUsers);
+        return res.status(400).json({ 
+          message: 'User with this email or phone already exists',
+          details: existingUsers.map(u => ({
+            id: u.id,
+            email: u.email,
+            phone: u.phone
+          }))
+        });
+      }
+      
+      // Hash password
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(password, salt);
+      
+      // Prepare user data
+      const newUser = {
+        name, 
+        email, 
+        phone, 
+        password: hashedPassword,
+        role: 'user' // Default role
+      };
+      
+      console.log('Attempting to insert user:', {
+        ...newUser,
+        password: '[REDACTED]'
+      });
+      
+      // Insert user with detailed error handling
+      const { data: createdUser, error: insertError } = await supabase
+        .from('users')
+        .insert([newUser])
+        .select();
+      
+      console.log('User Insertion Result:', {
+        createdUser,
+        insertError
+      });
+      
+      if (insertError) {
+        console.error('Detailed Insertion Error:', {
+          message: insertError.message,
+          details: insertError,
+          code: insertError.code
+        });
+        
+        return res.status(500).json({ 
+          message: 'Failed to create user in database',
+          error: insertError.message,
+          code: insertError.code,
+          details: insertError
+        });
+      }
+      
+      if (!createdUser || createdUser.length === 0) {
+        console.error('No user data returned after insert');
+        return res.status(500).json({ 
+          message: 'User created but no data returned',
+          details: 'Unexpected database behavior'
+        });
+      }
+      
+      const userRecord = createdUser[0];
+      
+      // Create token
+      const token = jwt.sign(
+        { id: userRecord.id, role: userRecord.role },
+        process.env.JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+      
+      // Remove password from response
+      const { password: _, ...userWithoutPassword } = userRecord;
+      
+      console.log('Registration Successful:', {
+        userId: userRecord.id,
+        email: userRecord.email
+      });
+      
+      res.status(201).json({
+        user: userWithoutPassword,
+        token
+      });
+    } catch (dbError) {
+      console.error('Comprehensive Database Error:', dbError);
+      res.status(500).json({ 
+        message: 'Unexpected database error',
+        error: dbError.message,
+        details: dbError
       });
     }
-    
-    if (!createdUser || createdUser.length === 0) {
-      console.error('No user data returned after insert');
-      return res.status(500).json({ message: 'User created but no data returned' });
-    }
-    
-    const userRecord = createdUser[0];
-    
-    // Create token
-    console.log('Creating JWT token for user ID:', userRecord.id);
-    const token = jwt.sign(
-      { id: userRecord.id, role: userRecord.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-    
-    // Remove password from response
-    const { password: _, ...userWithoutPassword } = userRecord;
-    
-    console.log('Registration successful for:', email);
-    res.status(201).json({
-      user: userWithoutPassword,
-      token
-    });
   } catch (error) {
-    console.error('Registration error details:', error);
+    console.error('Registration Unexpected Error:', error);
     res.status(500).json({ 
-      message: 'Server error during registration', 
+      message: 'Unexpected server error during registration', 
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
@@ -146,22 +199,12 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
-    console.log('Login attempt with phone:', req.body.phone);
+    console.log('Login attempt:', req.body);
     const { phone, password } = req.body;
     
     if (!phone || !password) {
       console.log('Missing phone or password');
       return res.status(400).json({ message: 'Phone and password are required' });
-    }
-    
-    // Debug: Check all users in the system
-    const { data: allUsers, error: allUsersError } = await supabase
-      .from('users')
-      .select('id, name, email, phone, role');
-    
-    console.log('All users in the system:', allUsers);
-    if (allUsersError) {
-      console.error('Error fetching all users:', allUsersError);
     }
     
     // Find user with the provided phone
@@ -210,7 +253,11 @@ app.post('/api/auth/login', async (req, res) => {
     // Create token
     console.log('Creating token for user ID:', user.id);
     const token = jwt.sign(
-      { id: user.id, role: user.role },
+      { 
+        id: user.id, 
+        role: user.role,
+        name: user.name
+      },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -227,7 +274,8 @@ app.post('/api/auth/login', async (req, res) => {
     console.error('Login error details:', error);
     res.status(500).json({ 
       message: 'Server error during login', 
-      error: error.message 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -277,133 +325,129 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
-app.post('/api/products', authenticateToken, isAdmin, async (req, res) => {
-  try {
-    const { name, description, price, category, image_url } = req.body;
-    
-    const { data, error } = await supabase
-      .from('products')
-      .insert([
-        { name, description, price, category, image_url }
-      ])
-      .select()
-      .single();
-    
-    if (error) {
-      throw error;
-    }
-    
-    res.status(201).json(data);
-  } catch (error) {
-    console.error('Error adding product:', error);
-    res.status(500).json({ message: 'Server error adding product' });
-  }
-});
-
-app.put('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, description, price, category, image_url } = req.body;
-    
-    const { data, error } = await supabase
-      .from('products')
-      .update({ name, description, price, category, image_url })
-      .eq('id', id)
-      .select()
-      .single();
-    
-    if (error) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    
-    res.json(data);
-  } catch (error) {
-    console.error('Error updating product:', error);
-    res.status(500).json({ message: 'Server error updating product' });
-  }
-});
-
-app.delete('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const { error } = await supabase
-      .from('products')
-      .delete()
-      .eq('id', id);
-    
-    if (error) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    
-    res.json({ message: 'Product deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting product:', error);
-    res.status(500).json({ message: 'Server error deleting product' });
-  }
-});
-
 // Order routes
 app.post('/api/orders', authenticateToken, async (req, res) => {
   try {
-    console.log('Creating order with data:', {
-      ...req.body,
-      user_id: req.user.id
-    });
-    
-    const { items, total } = req.body;
-    const user_id = req.user.id;
-    
-    console.log('Authenticated user ID:', user_id);
-    
-    // Validate order data
+    console.log('=== Order Creation Attempt ===');
+    console.log('Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('Authenticated User:', req.user);
+
+    // Destructure and validate input
+    const { items, total, user_id } = req.body;
+
+    // Validate user_id matches authenticated user
+    if (user_id !== req.user.id) {
+      console.error('User ID mismatch', { 
+        requestedUserId: user_id, 
+        authenticatedUserId: req.user.id 
+      });
+      return res.status(403).json({ 
+        message: 'Unauthorized order creation' 
+      });
+    }
+
+    // Comprehensive input validation
     if (!items || !Array.isArray(items) || items.length === 0) {
-      console.log('Invalid items data:', items);
-      return res.status(400).json({ message: 'Invalid items data' });
+      console.error('Invalid items:', items);
+      return res.status(400).json({ 
+        message: 'Invalid order items',
+        details: 'Order must contain at least one item'
+      });
     }
+
+    // Validate total
+    const calculatedTotal = items.reduce((sum, item) => 
+      sum + (item.price * item.quantity), 0);
     
-    if (total === undefined || total <= 0) {
-      console.log('Invalid total:', total);
-      return res.status(400).json({ message: 'Invalid total amount' });
+    const totalMatchesCalculated = Math.abs(calculatedTotal - total) < 0.01;
+    
+    if (!totalMatchesCalculated) {
+      console.error('Total mismatch', { 
+        providedTotal: total, 
+        calculatedTotal: calculatedTotal 
+      });
+      return res.status(400).json({ 
+        message: 'Invalid order total',
+        details: 'Order total does not match item prices'
+      });
     }
-    
-    // Generate a unique token (6 characters)
+
+    // Generate unique order token
     const token = Math.random().toString(36).substring(2, 8).toUpperCase();
-    console.log('Generated order token:', token);
-    
-    // Create order
-    console.log('Attempting to insert order into database');
+    console.log('Generated Order Token:', token);
+
+    // Prepare order data
+    const orderData = {
+      user_id,
+      items: JSON.stringify(items),  // Store as JSON string
+      total: parseFloat(total.toFixed(2)),
+      status: 'pending',
+      token
+    };
+
+    // Insert order into database
+    console.log('Inserting order:', orderData);
     const { data: order, error } = await supabase
       .from('orders')
-      .insert([
-        { 
-          user_id, 
-          items, 
-          total, 
-          status: 'pending',
-          token
-        }
-      ])
+      .insert([orderData])
       .select()
       .single();
-    
+
+    // Handle insertion errors
     if (error) {
-      console.error('Error creating order:', error);
-      throw error;
+      console.error('Order Insertion Error:', error);
+      return res.status(500).json({ 
+        message: 'Failed to create order',
+        error: error.message,
+        details: error.details || 'Database insertion failed'
+      });
     }
-    
-    console.log('Order created successfully:', order.id);
+
+    // Log successful order creation
+    console.log('Order Created Successfully:', {
+      orderId: order.id,
+      token: order.token,
+      total: order.total
+    });
+
+    // Return created order
     res.status(201).json(order);
   } catch (error) {
-    console.error('Error creating order:', error);
+    // Catch any unexpected errors
+    console.error('=== Unexpected Order Creation Error ===');
+    console.error(error);
+
     res.status(500).json({ 
-      message: 'Server error creating order',
+      message: 'Unexpected server error during order creation',
       error: error.message,
-      details: error.details || 'No additional details'
+      details: process.env.NODE_ENV === 'development' 
+        ? error.stack 
+        : 'An unexpected error occurred'
     });
   }
 });
 
+// Get user's orders
+app.get('/api/orders/user', authenticateToken, async (req, res) => {
+  try {
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      throw error;
+    }
+    
+    res.json(orders);
+  } catch (error) {
+    console.error('Error fetching user orders:', error);
+    res.status(500).json({ message: 'Server error fetching orders' });
+  }
+});
+
+// Get specific order details
 app.get('/api/orders/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -430,26 +474,7 @@ app.get('/api/orders/:id', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/api/orders/user', authenticateToken, async (req, res) => {
-  try {
-    const { data: orders, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('user_id', req.user.id)
-      .order('created_at', { ascending: false });
-    
-    if (error) {
-      throw error;
-    }
-    
-    res.json(orders);
-  } catch (error) {
-    console.error('Error fetching user orders:', error);
-    res.status(500).json({ message: 'Server error fetching orders' });
-  }
-});
-
-// Admin routes
+// Admin routes for orders
 app.get('/api/admin/orders', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { data: orders, error } = await supabase
@@ -468,6 +493,7 @@ app.get('/api/admin/orders', authenticateToken, isAdmin, async (req, res) => {
   }
 });
 
+// Update order status (admin only)
 app.put('/api/admin/orders/:id/status', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -497,37 +523,7 @@ app.put('/api/admin/orders/:id/status', authenticateToken, isAdmin, async (req, 
   }
 });
 
-app.get('/api/admin/users', authenticateToken, isAdmin, async (req, res) => {
-  try {
-    // Get users with order count
-    const { data: users, error } = await supabase
-      .from('users')
-      .select(`
-        *,
-        orders:orders(id)
-      `)
-      .neq('role', 'admin');
-    
-    if (error) {
-      throw error;
-    }
-    
-    // Format response to include order count
-    const formattedUsers = users.map(user => {
-      const { orders, password, ...userWithoutPassword } = user;
-      return {
-        ...userWithoutPassword,
-        order_count: orders.length
-      };
-    });
-    
-    res.json(formattedUsers);
-  } catch (error) {
-    console.error('Error fetching users:', error);
-    res.status(500).json({ message: 'Server error fetching users' });
-  }
-});
-
+// Admin dashboard route
 app.get('/api/admin/dashboard', authenticateToken, isAdmin, async (req, res) => {
   try {
     // Get stats
@@ -594,6 +590,7 @@ app.get('/api/admin/dashboard', authenticateToken, isAdmin, async (req, res) => 
   }
 });
 
+// Admin financial overview route
 app.get('/api/admin/financials', authenticateToken, isAdmin, async (req, res) => {
   try {
     // Get all orders
@@ -651,7 +648,119 @@ app.get('/api/admin/financials', authenticateToken, isAdmin, async (req, res) =>
   }
 });
 
+// Admin users route
+app.get('/api/admin/users', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    // Get users with order count
+    const { data: users, error } = await supabase
+      .from('users')
+      .select(`
+        *,
+        orders:orders(id)
+      `)
+      .neq('role', 'admin');
+    
+    if (error) {
+      throw error;
+    }
+    
+    // Format response to include order count
+    const formattedUsers = users.map(user => {
+      const { orders, password, ...userWithoutPassword } = user;
+      return {
+        ...userWithoutPassword,
+        order_count: orders.length
+      };
+    });
+    
+    res.json(formattedUsers);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ message: 'Server error fetching users' });
+  }
+});
+
+// Admin product management routes
+app.post('/api/products', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { name, description, price, category, image_url } = req.body;
+    
+    const { data, error } = await supabase
+      .from('products')
+      .insert([
+        { name, description, price, category, image_url }
+      ])
+      .select()
+      .single();
+    
+    if (error) {
+      throw error;
+    }
+    
+    res.status(201).json(data);
+  } catch (error) {
+    console.error('Error adding product:', error);
+    res.status(500).json({ message: 'Server error adding product' });
+  }
+});
+
+app.put('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, price, category, image_url } = req.body;
+    
+    const { data, error } = await supabase
+      .from('products')
+      .update({ name, description, price, category, image_url })
+      .eq('id', id)
+      .select()
+      .single();
+    
+    if (error) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+    
+    res.json(data);
+  } catch (error) {
+    console.error('Error updating product:', error);
+    res.status(500).json({ message: 'Server error updating product' });
+  }
+});
+
+app.delete('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const { error } = await supabase
+      .from('products')
+      .delete()
+      .eq('id', id);
+    
+    if (error) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+    
+    res.json({ message: 'Product deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting product:', error);
+    res.status(500).json({ message: 'Server error deleting product' });
+  }
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled Error:', err);
+  res.status(500).json({
+    message: 'An unexpected error occurred',
+    error: process.env.NODE_ENV === 'development' ? err.message : 'Internal Server Error'
+  });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log('Environment:', process.env.NODE_ENV || 'development');
+  console.log('JWT Secret:', process.env.JWT_SECRET ? 'Configured' : 'NOT SET');
 });
+
+export default app;

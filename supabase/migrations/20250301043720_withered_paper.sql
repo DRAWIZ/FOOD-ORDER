@@ -91,6 +91,33 @@ CREATE POLICY "Only admins can update orders"
   TO authenticated
   USING (auth.jwt() ->> 'role' = 'admin');
 
+-- Enable Row Level Security
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+
+-- Policy to allow users to insert themselves
+CREATE POLICY "Users can register"
+ON public.users
+FOR INSERT
+WITH CHECK (true);
+
+-- Policy to allow users to read their own data
+CREATE POLICY "Users can read their own data"
+ON public.users
+FOR SELECT
+USING (auth.uid() = id OR role = 'admin');
+
+-- Policy to allow users to update their own data
+CREATE POLICY "Users can update their own data"
+ON public.users
+FOR UPDATE
+USING (auth.uid() = id);
+
+-- Policy for admin access
+CREATE POLICY "Admins can perform all actions"
+ON public.users
+FOR ALL
+USING (role = 'admin');  
+
 -- Create admin user (password: admin123)
 INSERT INTO users (name, email, phone, password, role)
 VALUES ('Admin', 'admin@foodtoken.com', '1234567890', '$2a$10$XOPbrlUPQdwdJUpSrIF6X.LbE14qsMmKGhM1A8W9iqaG3vv1BD7WC', 'admin')
